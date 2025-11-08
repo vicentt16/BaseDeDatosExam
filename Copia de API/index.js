@@ -272,6 +272,70 @@ app.get("/compras/:id" ,(req,res) => {
     
 })
 
+app.post("/compras", (req, res) => {
+    const { user_id, total, status, purchase_date } = req.body;
+
+    if (!user_id) {
+        return res.status(400).json({
+            error: 'El campo usuario es obligatorio'
+        });
+    }
+
+    const query = 'INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, ?, ?)';
+
+    pool.query(query, [user_id, total || null, status || null, purchase_date || null])
+        .then(([result]) => {
+            res.status(201).json({
+                message: 'compra creada exitosamente',
+                id: result.insertId,
+                compra: {
+                    id: result.insertId,
+                    user_id,
+                    total,
+                    status,
+                    purchase_date
+                }
+            });
+        })
+        .catch(err => {
+            console.error('Error creating purchase', err);
+
+            if (err.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({
+                    error: 'El usuario ya tiene una compra registrada con ese ID'
+                });
+            }
+        })
+        .catch(err => {
+            console.error('Error creating product', err);
+
+            if (err.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({
+                    error: 'El nombre del producto ya está registrado'
+                });
+            }
+
+            res.status(500).json({
+                error: 'Error interno del servidor al crear el producto'
+            });
+        })
+        .catch(err => {
+            console.error('Error creating Product', err);
+
+            if (err.code === 'ER_DUP_ENTRY') {
+                return res.status(409).json({
+                    error: 'El nombre del producto ya está registrado'
+                });
+            }
+
+            res.status(500).json({
+                error: 'Error interno del servidor al crear el producto'
+            });
+        });
+});
+
+
+
 
 app.listen(port, () => {
     console.log(`App listening at http://localhost:${port}`);
