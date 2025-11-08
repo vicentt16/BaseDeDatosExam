@@ -239,6 +239,20 @@ app.put("/productos/:id", async (req, res) => {
 });
 
 
+
+// Endpoint para identificar los purchases 
+app.get("/compras", (req, res) => {
+    pool.query('SELECT * FROM purchases')
+        .then(([rows, fields]) => {
+            res.json(rows);
+        })
+        .catch(err => {
+            console.error('Error executing query', err);
+            res.status(500).send('Error retrieving products');
+        });
+})
+
+
 app.listen(port, () => {
     console.log(`App listening at http://localhost:${port}`);
 });
