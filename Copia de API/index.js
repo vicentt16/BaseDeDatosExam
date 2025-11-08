@@ -334,6 +334,23 @@ app.post("/compras", (req, res) => {
         });
 });
 
+app.delete("/compras/:id" ,(req,res) => {
+    const id = req.params.id;
+    const sql = "DELETE FROM purchases WHERE id = ?"; 
+    pool.query(sql, [id])
+    .then((rows, fields) =>{
+        if(rows.length > 0){
+        res.json(rows[0])   
+        } else {
+            res.status(404).send("product not Found");
+        }
+    })
+    .catch((err) => {
+        console.log(err);
+        res.status(404).send("product not Found");
+    })
+    
+})
 
 
 
