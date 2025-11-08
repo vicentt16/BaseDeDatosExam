@@ -240,6 +240,8 @@ app.put("/productos/:id", async (req, res) => {
 
 
 
+
+
 // Endpoint para identificar los purchases 
 app.get("/compras", (req, res) => {
     pool.query('SELECT * FROM purchases')
@@ -250,6 +252,24 @@ app.get("/compras", (req, res) => {
             console.error('Error executing query', err);
             res.status(500).send('Error retrieving products');
         });
+})
+
+app.get("/compras/:id" ,(req,res) => {
+    const id = req.params.id;
+    const sql = "SELECT * FROM purchases WHERE id = ?";
+    pool.query(sql, [id])
+    .then((rows, fields) =>{
+        if(rows.length > 0){
+        res.json(rows[0])   
+        } else {
+            res.status(404).send("product not Found");
+        }
+    })
+    .catch((err) => {
+        console.log(err);
+        res.status(404).send("product not Found");
+    })
+    
 })
 
 
