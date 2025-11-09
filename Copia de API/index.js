@@ -370,23 +370,31 @@ app.post("/compras", async (req, res) => {
 });
 
 
-app.delete("/compras/:id" ,(req,res) => {
-    const id = req.params.id;
-    const sql = "DELETE FROM purchases WHERE id = ? "; 
-    pool.query(sql, [id])
-    .then((rows, fields) =>{
-        if(rows.length > 0){
-        res.json(rows[0])   
-        } else {
-            res.status(404).send("product not Found");
-        }
-    })
-    .catch((err) => {
-        console.log(err);
-        res.status(404).send("product not Found");
-    })
-    
-})
+app.delete("/compras/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.query(`SELECT * FROM purchases WHERE id = ?`, [id]);
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Compra no encontrada" });
+
+    if (rows[0].status === "COMPLETED")
+      return res.status(400).json({ error: "No se puede eliminar una compra COMPLETED" });
+
+    // Revertir stock
+    const [detalles] = await pool.query(`SELECT * FROM purchase_details WHERE purchase_id = ?`, [id]);
+    for (const d of detalles)
+      await pool.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [d.quantity, d.product_id]);
+
+    await pool.query(`DELETE FROM purchase_details WHERE purchase_id = ?`, [id]);
+    await pool.query(`DELETE FROM purchases WHERE id = ?`, [id]);
+
+    res.json({ message: "Compra eliminada correctamente" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error al eliminar la compra", details: err.message });
+  }
+});
 
 app.put("/compras/:id", async (req, res) => {
   try {
