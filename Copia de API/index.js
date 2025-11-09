@@ -242,6 +242,10 @@ app.put("/productos/:id", async (req, res) => {
 
 
 
+const CalcularSubtotal = (cantidad, precio) => ((cantidad*precio).toFixed(2));
+const MaxProductos = 5;
+const MaxTotal = 3500;
+
 // Endpoint para identificar los purchases 
 app.get("/compras", (req, res) => {
     pool.query('SELECT * FROM purchases')
@@ -250,7 +254,7 @@ app.get("/compras", (req, res) => {
         })
         .catch(err => {
             console.error('Error executing query', err);
-            res.status(500).send('Error retrieving products');
+            res.status(500).send('Error retrieving compras');
         });
 })
 
@@ -272,71 +276,63 @@ app.get("/compras/:id" ,(req,res) => {
     
 })
 
-app.post("/compras", (req, res) => {
-    const { user_id, total, status, purchase_date } = req.body;
+app.post("/compras", async (req, res) => {
+  try {
+    const { user_id, status, details } = req.body;
 
-    if (!user_id) {
-        return res.status(400).json({
-            error: 'El campo usuario es obligatorio'
-        });
+    if (!user_id || !Array.isArray(details) || details.length === 0)
+      return res.status(400).json({ error: "Debe incluir user_id y al menos un producto" });
+
+    if (details.length > MaxProductos)
+      return res.status(400).json({ error: `Máximo ${MaxProductos} productos por compra` });
+
+    let total = 0;
+
+    // Verificar stock y calcular total
+    for (const d of details) {
+      const [prod] = await pool.query(`SELECT stock, name FROM products WHERE id = ?`, [d.product_id]);
+      if (prod.length === 0)
+        return res.status(404).json({ error: `Producto ${d.product_id} no encontrado` });
+
+      if (prod[0].stock < d.quantity)
+        return res.status(400).json({ error: `Stock insuficiente para ${prod[0].name}` });
+
+      total += CalcularSubtotal(d.quantity, d.price);
     }
 
-    const query = 'INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, ?, ?)';
+    if (total > MaxTotal)
+      return res.status(400).json({ error: `El total excede $${MAX_TOTAL}` });
 
-    pool.query(query, [user_id, total || null, status || null, purchase_date || null])
-        .then(([result]) => {
-            res.status(201).json({
-                message: 'compra creada exitosamente',
-                id: result.insertId,
-                compra: {
-                    id: result.insertId,
-                    user_id,
-                    total,
-                    status,
-                    purchase_date
-                }
-            });
-        })
-        .catch(err => {
-            console.error('Error creating purchase', err);
+    // Insertar compra
+    const [purchase] = await pool.query(
+      `INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, ?, NOW())`,
+      [user_id, total, status || "PENDING"]
+    );
 
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(409).json({
-                    error: 'El usuario ya tiene una compra registrada con ese ID'
-                });
-            }
-        })
-        .catch(err => {
-            console.error('Error creating product', err);
+    const purchaseId = purchase.insertId;
 
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(409).json({
-                    error: 'El nombre del producto ya está registrado'
-                });
-            }
+    // Insertar detalles y actualizar stock
+    for (const d of details) {
+      const subtotal = CalcularSubtotal(d.quantity, d.price);
 
-            res.status(500).json({
-                error: 'Error interno del servidor al crear el producto'
-            });
-        })
-        .catch(err => {
-            console.error('Error creating Product', err);
+      await pool.query(`
+        INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal)
+        VALUES (?, ?, ?, ?, ?)
+      `, [purchaseId, d.product_id, d.quantity, d.price, subtotal]);
 
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(409).json({
-                    error: 'El nombre del producto ya está registrado'
-                });
-            }
+      await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [d.quantity, d.product_id]);
+    }
 
-            res.status(500).json({
-                error: 'Error interno del servidor al crear el producto'
-            });
-        });
+    res.status(201).json({ message: "Compra creada exitosamente", id: purchaseId, total });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error al crear la compra", details: err.message });
+  }
 });
 
 app.delete("/compras/:id" ,(req,res) => {
     const id = req.params.id;
-    const sql = "DELETE FROM purchases WHERE id = ?"; 
+    const sql = "DELETE FROM purchases WHERE id = ? AND status != 'Completed'"; 
     pool.query(sql, [id])
     .then((rows, fields) =>{
         if(rows.length > 0){
