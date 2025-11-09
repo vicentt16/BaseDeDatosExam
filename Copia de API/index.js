@@ -280,14 +280,12 @@ app.post("/compras", async (req, res) => {
   try {
     const { user_id, status, details } = req.body;
 
-    // Validaciones básicas
     if (!user_id || !Array.isArray(details) || details.length === 0)
       return res.status(400).json({ error: "Debe incluir user_id y al menos un producto" });
 
     if (details.length > MaxProductos)
       return res.status(400).json({ error: `Máximo ${MaxProductos} productos por compra` });
 
-    // 🔹 1. Obtener todos los productos involucrados de una sola vez
     const productIds = details.map(d => d.product_id);
     const [products] = await pool.query(
       `SELECT id, name, stock, price FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`,
@@ -297,11 +295,10 @@ app.post("/compras", async (req, res) => {
     if (products.length !== productIds.length)
       return res.status(404).json({ error: "Uno o más productos no existen" });
 
-    // 🔹 2. Crear un mapa rápido de productos por ID
     const productMap = {};
     for (const p of products) productMap[p.id] = p;
 
-    // 🔹 3. Validar stock y calcular total
+    
     let total = 0;
     const detallesConPrecio = [];
 
@@ -328,7 +325,7 @@ app.post("/compras", async (req, res) => {
     if (total > MaxTotal)
       return res.status(400).json({ error: `El total excede $${MaxTotal}` });
 
-    // 🔹 4. Insertar la compra
+    
     const [purchase] = await pool.query(
       `INSERT INTO purchases (user_id, total, status, purchase_date)
        VALUES (?, ?, ?, NOW())`,
@@ -337,7 +334,7 @@ app.post("/compras", async (req, res) => {
 
     const purchaseId = purchase.insertId;
 
-    // 🔹 5. Insertar todos los detalles (uno por producto)
+   
     const detailInserts = detallesConPrecio.map(d => [
       purchaseId,
       d.product_id,
@@ -352,7 +349,7 @@ app.post("/compras", async (req, res) => {
       [detailInserts]
     );
 
-    // 🔹 6. Actualizar stock en una sola pasada
+   
     for (const d of detallesConPrecio) {
       await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [d.quantity, d.product_id]);
     }
@@ -381,7 +378,7 @@ app.delete("/compras/:id", async (req, res) => {
     if (rows[0].status === "COMPLETED")
       return res.status(400).json({ error: "No se puede eliminar una compra COMPLETED" });
 
-    // Revertir stock
+   
     const [detalles] = await pool.query(`SELECT * FROM purchase_details WHERE purchase_id = ?`, [id]);
     for (const d of detalles)
       await pool.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [d.quantity, d.product_id]);
