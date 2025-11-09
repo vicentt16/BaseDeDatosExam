@@ -242,7 +242,7 @@ app.put("/productos/:id", async (req, res) => {
 
 
 
-const CalcularSubtotal = (cantidad, precio) => ((cantidad*precio).toFixed(2));
+const calcularSubtotal = (cantidad, precio) => ((cantidad*precio).toFixed(2));
 const MaxProductos = 5;
 const MaxTotal = 3500;
 
@@ -280,59 +280,99 @@ app.post("/compras", async (req, res) => {
   try {
     const { user_id, status, details } = req.body;
 
+    // Validaciones básicas
     if (!user_id || !Array.isArray(details) || details.length === 0)
       return res.status(400).json({ error: "Debe incluir user_id y al menos un producto" });
 
     if (details.length > MaxProductos)
       return res.status(400).json({ error: `Máximo ${MaxProductos} productos por compra` });
 
-    let total = 0;
+    // 🔹 1. Obtener todos los productos involucrados de una sola vez
+    const productIds = details.map(d => d.product_id);
+    const [products] = await pool.query(
+      `SELECT id, name, stock, price FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`,
+      productIds
+    );
 
-    // Verificar stock y calcular total
+    if (products.length !== productIds.length)
+      return res.status(404).json({ error: "Uno o más productos no existen" });
+
+    // 🔹 2. Crear un mapa rápido de productos por ID
+    const productMap = {};
+    for (const p of products) productMap[p.id] = p;
+
+    // 🔹 3. Validar stock y calcular total
+    let total = 0;
+    const detallesConPrecio = [];
+
     for (const d of details) {
-      const [prod] = await pool.query(`SELECT stock, name FROM products WHERE id = ?`, [d.product_id]);
-      if (prod.length === 0)
+      const producto = productMap[d.product_id];
+      if (!producto)
         return res.status(404).json({ error: `Producto ${d.product_id} no encontrado` });
 
-      if (prod[0].stock < d.quantity)
-        return res.status(400).json({ error: `Stock insuficiente para ${prod[0].name}` });
+      if (producto.stock < d.quantity)
+        return res.status(400).json({ error: `Stock insuficiente para ${producto.name}` });
 
-      total += CalcularSubtotal(d.quantity, d.price);
+      const precio = parseFloat(producto.price);
+      const subtotal = calcularSubtotal(d.quantity, precio);
+      total += Number(subtotal);
+
+      detallesConPrecio.push({
+        product_id: d.product_id,
+        quantity: d.quantity,
+        price: parseFloat(producto.price),
+        subtotal
+      });
     }
 
     if (total > MaxTotal)
-      return res.status(400).json({ error: `El total excede $${MAX_TOTAL}` });
+      return res.status(400).json({ error: `El total excede $${MaxTotal}` });
 
-    // Insertar compra
+    // 🔹 4. Insertar la compra
     const [purchase] = await pool.query(
-      `INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, ?, NOW())`,
+      `INSERT INTO purchases (user_id, total, status, purchase_date)
+       VALUES (?, ?, ?, NOW())`,
       [user_id, total, status || "PENDING"]
     );
 
     const purchaseId = purchase.insertId;
 
-    // Insertar detalles y actualizar stock
-    for (const d of details) {
-      const subtotal = CalcularSubtotal(d.quantity, d.price);
+    // 🔹 5. Insertar todos los detalles (uno por producto)
+    const detailInserts = detallesConPrecio.map(d => [
+      purchaseId,
+      d.product_id,
+      d.quantity,
+      d.price,
+      d.subtotal
+    ]);
 
-      await pool.query(`
-        INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal)
-        VALUES (?, ?, ?, ?, ?)
-      `, [purchaseId, d.product_id, d.quantity, d.price, subtotal]);
+    await pool.query(
+      `INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal)
+       VALUES ?`,
+      [detailInserts]
+    );
 
+    // 🔹 6. Actualizar stock en una sola pasada
+    for (const d of detallesConPrecio) {
       await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [d.quantity, d.product_id]);
     }
 
-    res.status(201).json({ message: "Compra creada exitosamente", id: purchaseId, total });
+    res.status(201).json({
+      message: "Compra creada exitosamente",
+      id: purchaseId,
+      total
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error al crear la compra", details: err.message });
   }
 });
 
+
 app.delete("/compras/:id" ,(req,res) => {
     const id = req.params.id;
-    const sql = "DELETE FROM purchases WHERE id = ? AND status != 'Completed'"; 
+    const sql = "DELETE FROM purchases WHERE id = ? "; 
     pool.query(sql, [id])
     .then((rows, fields) =>{
         if(rows.length > 0){
