@@ -352,7 +352,28 @@ app.delete("/compras/:id" ,(req,res) => {
     
 })
 
-
+app.put("/compras/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { user_id, total, status, purchase_date } = req.body;
+    const sql = `
+      UPDATE purchases
+      SET user_id = ?, total = ?, status = ?, purchase_date = ?
+      WHERE id = ?
+    `;
+    const [result] = await pool.query(sql, [
+      user_id,
+      total,
+      status,
+      purchase_date
+    ]);
+    if (result.affectedRows === 0)
+      return res.status(404).json({ message: "Compra no encontrada" });
+    res.json({ message: "Compra actualizada exitosamente" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.listen(port, () => {
     console.log(`App listening at http://localhost:${port}`);
