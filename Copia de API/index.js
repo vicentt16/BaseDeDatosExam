@@ -396,23 +396,103 @@ app.delete("/compras/:id", async (req, res) => {
 app.put("/compras/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { user_id, total, status, purchase_date } = req.body;
-    const sql = `
-      UPDATE purchases
-      SET user_id = ?, total = ?, status = ?, purchase_date = ?
-      WHERE id = ?
-    `;
-    const [result] = await pool.query(sql, [
-      user_id,
+    const { user_id, status, details } = req.body;
+
+    // Buscar la compra existente
+    const [compra] = await pool.query(`SELECT * FROM purchases WHERE id = ?`, [id]);
+    if (compra.length === 0)
+      return res.status(404).json({ error: "Compra no encontrada" });
+
+    // No se puede modificar si ya está completada
+    if (compra[0].status === "COMPLETED")
+      return res.status(400).json({ error: "No se puede modificar una compra COMPLETED" });
+
+    let total = 0;
+
+    // Si hay nuevos detalles, procesarlos
+    if (details && details.length > 0) {
+      if (details.length > MaxProductos)
+        return res.status(400).json({ error: `Máximo ${MaxProductos} productos por compra` });
+
+      // Revertir stock anterior
+      const [oldDetails] = await pool.query(
+        `SELECT * FROM purchase_details WHERE purchase_id = ?`,
+        [id]
+      );
+      for (const d of oldDetails) {
+        await pool.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [
+          d.quantity,
+          d.product_id,
+        ]);
+      }
+
+      // Eliminar detalles anteriores
+      await pool.query(`DELETE FROM purchase_details WHERE purchase_id = ?`, [id]);
+
+      // Validar nuevos productos y recalcular total
+      for (const d of details) {
+        // Obtener el producto real desde la base de datos (con precio)
+        const [prod] = await pool.query(
+          `SELECT id, name, stock, price FROM products WHERE id = ?`,
+          [d.product_id]
+        );
+
+        if (prod.length === 0)
+          return res.status(404).json({ error: `Producto ${d.product_id} no encontrado` });
+
+        const producto = prod[0];
+
+        if (producto.stock < d.quantity)
+          return res
+            .status(400)
+            .json({ error: `Stock insuficiente para ${producto.name}` });
+
+        const precio = parseFloat(producto.price);
+        const subtotal = Number((d.quantity * precio).toFixed(2));
+        total += subtotal;
+
+        // Insertar nuevo detalle con el precio real del producto
+        await pool.query(
+          `INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal)
+           VALUES (?, ?, ?, ?, ?)`,
+          [id, d.product_id, d.quantity, precio, subtotal]
+        );
+
+        // Actualizar stock del producto
+        await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [
+          d.quantity,
+          d.product_id,
+        ]);
+      }
+
+      total = Number(total.toFixed(2));
+
+      if (total > MaxTotal)
+        return res
+          .status(400)
+          .json({ error: `El total excede $${MaxTotal}` });
+    } else {
+      // Si no hay nuevos detalles, mantener el total anterior
+      total = compra[0].total;
+    }
+
+    // Actualizar la compra principal
+    await pool.query(
+      `UPDATE purchases
+       SET user_id = ?, total = ?, status = ?, purchase_date = NOW()
+       WHERE id = ?`,
+      [user_id || compra[0].user_id, total, status || compra[0].status, id]
+    );
+
+    res.json({
+      message: "Compra actualizada exitosamente",
       total,
-      status,
-      purchase_date
-    ]);
-    if (result.affectedRows === 0)
-      return res.status(404).json({ message: "Compra no encontrada" });
-    res.json({ message: "Compra actualizada exitosamente" });
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res
+      .status(500)
+      .json({ error: "Error al actualizar la compra", details: err.message });
   }
 });
 
