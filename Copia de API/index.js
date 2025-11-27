@@ -70,7 +70,6 @@ app.post("/usuarios", (req, res) => {
         .catch(err => {
             console.error('Error creating user', err);
 
-            // Manejar error de email duplicado (si existe constraint UNIQUE)
             if (err.code === 'ER_DUP_ENTRY') {
                 return res.status(409).json({
                     error: 'El email ya está registrado'
@@ -266,12 +265,12 @@ app.get("/compras/:id" ,(req,res) => {
         if(rows.length > 0){
         res.json(rows[0])   
         } else {
-            res.status(404).send("product not Found");
+            res.status(404).send("purchase not Found");
         }
     })
     .catch((err) => {
         console.log(err);
-        res.status(404).send("product not Found");
+        res.status(404).send("purchase not Found");
     })
     
 })
@@ -288,7 +287,7 @@ app.post("/compras", async (req, res) => {
 
     const productIds = details.map(d => d.product_id);
     const [products] = await pool.query(
-      `SELECT id, name, stock, price FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`,
+      `SELECT id, name, stock, price, description FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`,
       productIds
     );
 
@@ -298,7 +297,7 @@ app.post("/compras", async (req, res) => {
     const productMap = {};
     for (const p of products) productMap[p.id] = p;
 
-    
+    let totalidsum = 0;
     let total = 0;
     const detallesConPrecio = [];
 
@@ -314,11 +313,16 @@ app.post("/compras", async (req, res) => {
       const subtotal = calcularSubtotal(d.quantity, precio);
       total += Number(subtotal);
 
+      const idsum = parseFloat(producto.id);
+      const subidsum = calcularSubtotal(d.quantity, idsum);
+      totalidsum += Number(subidsum);
+
       detallesConPrecio.push({
         product_id: d.product_id,
+        name: producto.name,
         quantity: d.quantity,
         price: parseFloat(producto.price),
-        subtotal
+        subtotal,
       });
     }
 
@@ -351,13 +355,14 @@ app.post("/compras", async (req, res) => {
 
    
     for (const d of detallesConPrecio) {
-      await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [d.quantity, d.product_id]);
+      await pool.query(`UPDATE products SET name = ?, stock = stock - ? WHERE id = ?`, [d.name, d.quantity, d.product_id]);
     }
 
     res.status(201).json({
       message: "Compra creada exitosamente",
       id: purchaseId,
-      total
+      total,
+      detallesConPrecio
     });
 
   } catch (err) {
@@ -398,23 +403,22 @@ app.put("/compras/:id", async (req, res) => {
     const { id } = req.params;
     const { user_id, status, details } = req.body;
 
-    // Buscar la compra existente
+  
     const [compra] = await pool.query(`SELECT * FROM purchases WHERE id = ?`, [id]);
     if (compra.length === 0)
       return res.status(404).json({ error: "Compra no encontrada" });
 
-    // No se puede modificar si ya está completada
+    
     if (compra[0].status === "COMPLETED")
       return res.status(400).json({ error: "No se puede modificar una compra COMPLETED" });
 
     let total = 0;
 
-    // Si hay nuevos detalles, procesarlos
+   
     if (details && details.length > 0) {
       if (details.length > MaxProductos)
         return res.status(400).json({ error: `Máximo ${MaxProductos} productos por compra` });
 
-      // Revertir stock anterior
       const [oldDetails] = await pool.query(
         `SELECT * FROM purchase_details WHERE purchase_id = ?`,
         [id]
@@ -426,12 +430,9 @@ app.put("/compras/:id", async (req, res) => {
         ]);
       }
 
-      // Eliminar detalles anteriores
       await pool.query(`DELETE FROM purchase_details WHERE purchase_id = ?`, [id]);
 
-      // Validar nuevos productos y recalcular total
       for (const d of details) {
-        // Obtener el producto real desde la base de datos (con precio)
         const [prod] = await pool.query(
           `SELECT id, name, stock, price FROM products WHERE id = ?`,
           [d.product_id]
@@ -451,14 +452,12 @@ app.put("/compras/:id", async (req, res) => {
         const subtotal = Number((d.quantity * precio).toFixed(2));
         total += subtotal;
 
-        // Insertar nuevo detalle con el precio real del producto
         await pool.query(
           `INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal)
            VALUES (?, ?, ?, ?, ?)`,
           [id, d.product_id, d.quantity, precio, subtotal]
         );
 
-        // Actualizar stock del producto
         await pool.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [
           d.quantity,
           d.product_id,
@@ -472,11 +471,9 @@ app.put("/compras/:id", async (req, res) => {
           .status(400)
           .json({ error: `El total excede $${MaxTotal}` });
     } else {
-      // Si no hay nuevos detalles, mantener el total anterior
       total = compra[0].total;
     }
 
-    // Actualizar la compra principal
     await pool.query(
       `UPDATE purchases
        SET user_id = ?, total = ?, status = ?, purchase_date = NOW()
